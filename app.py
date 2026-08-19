@@ -15,7 +15,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 PRIMARY_MODEL = "gemini-3.6-flash"
 
 # Backup model
-BACKUP_MODEL = "gemini-2.5-flash-lite"
+BACKUP_MODEL = "gemini-3.5-flash-lite"
 
 # Google Gemini API
 GEMINI_BASE_URL = (
