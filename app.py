@@ -10,9 +10,12 @@ app = Flask(__name__)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
+# Current stable Gemini model
+GEMINI_MODEL = "gemini-3.6-flash"
+
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/"
-    "v1beta/models/gemini-2.5-flash:generateContent"
+    f"v1beta/models/{GEMINI_MODEL}:generateContent"
 )
 
 
@@ -26,7 +29,8 @@ def home():
     return jsonify({
         "success": True,
         "status": "online",
-        "message": "Aashi AI Backend is running 🚀"
+        "message": "Aashi AI Backend is running 🚀",
+        "model": GEMINI_MODEL
     })
 
 
@@ -40,7 +44,8 @@ def health():
     return jsonify({
         "success": True,
         "backend": "online",
-        "gemini_key_configured": bool(GEMINI_API_KEY)
+        "gemini_key_configured": bool(GEMINI_API_KEY),
+        "gemini_model": GEMINI_MODEL
     })
 
 
@@ -73,7 +78,7 @@ def chat():
 
         user_message = data.get("message")
 
-        if not user_message:
+        if user_message is None:
 
             return jsonify({
                 "success": False,
@@ -156,7 +161,6 @@ USER:
                 }
             ],
             "generationConfig": {
-                "temperature": 0.7,
                 "maxOutputTokens": 1024
             }
         }
@@ -167,6 +171,10 @@ USER:
             "x-goog-api-key": GEMINI_API_KEY
         }
 
+
+        # =================================================
+        # SEND REQUEST
+        # =================================================
 
         response = requests.post(
             GEMINI_URL,
@@ -184,30 +192,62 @@ USER:
 
             result = response.json()
 
-
             try:
 
-                ai_reply = (
-                    result["candidates"][0]
-                    ["content"]["parts"][0]["text"]
-                )
+                candidates = result.get("candidates", [])
 
-            except (
-                KeyError,
-                IndexError,
-                TypeError
-            ):
+                if not candidates:
+
+                    return jsonify({
+                        "success": False,
+                        "error": "Gemini returned no candidates",
+                        "details": result
+                    }), 500
+
+
+                content = candidates[0].get("content", {})
+
+                parts = content.get("parts", [])
+
+                if not parts:
+
+                    return jsonify({
+                        "success": False,
+                        "error": "Gemini returned no response text",
+                        "details": result
+                    }), 500
+
+
+                ai_reply = parts[0].get("text", "")
+
+
+                if not ai_reply:
+
+                    return jsonify({
+                        "success": False,
+                        "error": "Gemini returned an empty response",
+                        "details": result
+                    }), 500
+
+
+            except (KeyError, IndexError, TypeError) as e:
 
                 return jsonify({
                     "success": False,
                     "error": "Gemini returned an unexpected response",
-                    "details": result
+                    "details": str(e),
+                    "raw_response": result
                 }), 500
 
 
+            # -------------------------------------------------
+            # SUCCESS RESPONSE
+            # -------------------------------------------------
+
             return jsonify({
                 "success": True,
-                "reply": ai_reply.strip()
+                "reply": ai_reply.strip(),
+                "model": GEMINI_MODEL
             })
 
 
@@ -226,6 +266,7 @@ USER:
 
         print("======================================")
         print("GEMINI API ERROR")
+        print("MODEL:", GEMINI_MODEL)
         print("STATUS:", response.status_code)
         print("DETAILS:", error_data)
         print("======================================")
@@ -238,6 +279,8 @@ USER:
             "error": "Gemini API error",
 
             "status_code": response.status_code,
+
+            "model": GEMINI_MODEL,
 
             "details": error_data
 
