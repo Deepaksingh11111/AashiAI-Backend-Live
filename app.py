@@ -5,10 +5,9 @@ import os
 import time
 import sqlite3
 import hashlib
+from pypdf import PdfReader
+import docx
 
-# =====================================================
-# FLASK CONFIGURATION
-# =====================================================
 app = Flask(__name__)
 CORS(app)
 
@@ -41,7 +40,6 @@ def init_db():
         )
     ''')
 
-    # Default Super Admin Seed
     cursor.execute("SELECT id FROM users WHERE username = 'admin'")
     if not cursor.fetchone():
         cursor.execute("INSERT INTO users (username, password, status) VALUES (?, ?, ?)",
@@ -60,9 +58,7 @@ init_db()
 def verify_admin(req_data):
     return req_data.get("admin_key", "") == ADMIN_SECRET_KEY
 
-# =====================================================
-# GROQ AI CONFIGURATION
-# =====================================================
+# GROQ CONFIGURATION
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 PRIMARY_MODEL = "openai/gpt-oss-120b"
 BACKUP_MODEL = "openai/gpt-oss-20b"
@@ -81,9 +77,36 @@ Rules:
 5. If asked about your creator, always state that you were created and developed by Deepak Singh.
 """
 
-# =====================================================
-# AUTH & USER STATUS ROUTES
-# =====================================================
+def extract_text_from_file(file_storage):
+    filename = file_storage.filename.lower()
+    content = ""
+    try:
+        if filename.endswith(".pdf"):
+            reader = PdfReader(file_storage)
+            for page in reader.pages:
+                text = page.extract_text()
+                if text:
+                    content += text + "\n"
+        elif filename.endswith(".docx"):
+            doc = docx.Document(file_storage)
+            content = "\n".join([p.text for p in doc.paragraphs])
+        elif filename.endswith(".txt"):
+            content = file_storage.read().decode("utf-8", errors="ignore")
+    except Exception as e:
+        print(f"Extraction error: {e}")
+    return content.strip()
+
+def call_groq(model, user_message):
+    return client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_message}
+        ],
+        temperature=0.7,
+        max_tokens=2048
+    )
+
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({"success": True, "status": "online", "message": "Aashi AI Backend Live 🚀"})
@@ -134,9 +157,6 @@ def login():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-# =====================================================
-# LIVE USER STATUS & BLOCK CHECK (3 SEC REAL-TIME POLL)
-# =====================================================
 @app.route("/user/check_requests", methods=["POST"])
 def check_user_requests():
     data = request.get_json(silent=True) or {}
@@ -154,11 +174,7 @@ def check_user_requests():
     if row:
         status = row[0]
         if status == "BLOCKED":
-            return jsonify({
-                "success": True,
-                "is_blocked": True,
-                "error": "BLOCKED_USER"
-            }), 200
+            return jsonify({"success": True, "is_blocked": True, "error": "BLOCKED_USER"}), 200
 
         return jsonify({
             "success": True,
@@ -168,9 +184,83 @@ def check_user_requests():
         }), 200
     return jsonify({"success": False, "error": "User not found"}), 404
 
-# =====================================================
+# DOCUMENT UPLOAD & QA ENDPOINT
+@app.route("/analyze_file", methods=["POST"])
+def analyze_file():
+    try:
+        if 'file' not in request.files:
+            return jsonify({"success": False, "error": "File attach nahi ki gayi."}), 400
+            
+        uploaded_file = request.files['file']
+        user_query = request.form.get("query", "Summarize and extract key insights from this document.")
+        username = request.form.get("username", "")
+
+        # Block check
+        if username:
+            conn = sqlite3.connect('users.db')
+            cursor = conn.cursor()
+            cursor.execute("SELECT status FROM users WHERE username = ?", (username,))
+            user_row = cursor.fetchone()
+            conn.close()
+            if user_row and user_row[0] == "BLOCKED":
+                return jsonify({"success": False, "error": "BLOCKED_USER"}), 403
+
+        extracted_text = extract_text_from_file(uploaded_file)
+        if not extracted_text:
+            return jsonify({"success": False, "error": "File se readable text extract nahi ho saka."}), 400
+
+        truncated_doc = extracted_text[:8000]
+        prompt = f"Document Text:\n\"\"\"\n{truncated_doc}\n\"\"\"\n\nUser Instruction: {user_query}\n\nPlease analyze the document clearly."
+
+        response = call_groq(PRIMARY_MODEL, prompt)
+        reply = response.choices[0].message.content
+
+        return jsonify({"success": True, "reply": reply})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# CHAT API (TEXT & VOICE)
+@app.route("/chat", methods=["POST"])
+def chat():
+    try:
+        data = request.get_json(silent=True) or {}
+        username = str(data.get("username", "")).strip()
+        user_message = str(data.get("message", "")).strip()
+
+        if username:
+            conn = sqlite3.connect('users.db')
+            cursor = conn.cursor()
+            cursor.execute("SELECT status FROM users WHERE username = ?", (username,))
+            user_row = cursor.fetchone()
+            conn.close()
+
+            if user_row and user_row[0] == "BLOCKED":
+                return jsonify({
+                    "success": False, 
+                    "error": "BLOCKED_USER", 
+                    "reply": "Aapka account admin dwara block kar diya gaya hai."
+                }), 403
+
+        if not user_message:
+            return jsonify({"success": False, "error": "Message cannot be empty"}), 400
+
+        if not GROQ_API_KEY or client is None:
+            return jsonify({"success": False, "error": "Groq client not configured"}), 500
+
+        try:
+            response = call_groq(PRIMARY_MODEL, user_message)
+            reply = response.choices[0].message.content
+            return jsonify({"success": True, "reply": reply, "model": PRIMARY_MODEL})
+        except Exception:
+            time.sleep(0.5)
+            response = call_groq(BACKUP_MODEL, user_message)
+            reply = response.choices[0].message.content
+            return jsonify({"success": True, "reply": reply, "model": BACKUP_MODEL, "fallback": True})
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
 # ADMIN ENDPOINTS
-# =====================================================
 @app.route("/admin/users", methods=["POST"])
 def get_all_users():
     data = request.get_json(silent=True) or {}
@@ -234,61 +324,6 @@ def get_stats():
         "total_chats": total_chats,
         "server_status": "ONLINE 🟢"
     }), 200
-
-# =====================================================
-# AI CHAT API (WITH BLOCK INTERCEPT)
-# =====================================================
-def call_groq(model, user_message):
-    return client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_message}
-        ],
-        temperature=0.7,
-        max_tokens=2048
-    )
-
-@app.route("/chat", methods=["POST"])
-def chat():
-    try:
-        data = request.get_json(silent=True) or {}
-        username = str(data.get("username", "")).strip()
-        user_message = str(data.get("message", "")).strip()
-
-        # Hard Block Validation
-        if username:
-            conn = sqlite3.connect('users.db')
-            cursor = conn.cursor()
-            cursor.execute("SELECT status FROM users WHERE username = ?", (username,))
-            user_row = cursor.fetchone()
-            conn.close()
-
-            if user_row and user_row[0] == "BLOCKED":
-                return jsonify({
-                    "success": False, 
-                    "error": "BLOCKED_USER", 
-                    "reply": "Aapka account admin dwara block kar diya gaya hai."
-                }), 403
-
-        if not user_message:
-            return jsonify({"success": False, "error": "Message cannot be empty"}), 400
-
-        if not GROQ_API_KEY or client is None:
-            return jsonify({"success": False, "error": "Groq client not configured"}), 500
-
-        try:
-            response = call_groq(PRIMARY_MODEL, user_message)
-            reply = response.choices[0].message.content
-            return jsonify({"success": True, "reply": reply, "model": PRIMARY_MODEL})
-        except Exception:
-            time.sleep(0.5)
-            response = call_groq(BACKUP_MODEL, user_message)
-            reply = response.choices[0].message.content
-            return jsonify({"success": True, "reply": reply, "model": BACKUP_MODEL, "fallback": True})
-
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
