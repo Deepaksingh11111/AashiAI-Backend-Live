@@ -6,6 +6,9 @@ import time
 import sqlite3
 import hashlib
 
+# =====================================================
+# FLASK & DB CONFIGURATION
+# =====================================================
 app = Flask(__name__)
 CORS(app)
 
@@ -18,7 +21,7 @@ def init_db():
     conn = sqlite3.connect('users.db')
     cursor = conn.cursor()
     
-    # Create tables
+    # Users Table with status and hardware permissions
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,6 +33,8 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    # Chats Logging Table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS chats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,7 +45,7 @@ def init_db():
         )
     ''')
 
-    # Seed default Admin account if not exists
+    # Seed Default Super Admin accounts
     cursor.execute("SELECT id FROM users WHERE username = 'admin'")
     if not cursor.fetchone():
         cursor.execute("INSERT INTO users (username, password, status) VALUES (?, ?, ?)",
@@ -59,7 +64,9 @@ init_db()
 def verify_admin(req_data):
     return req_data.get("admin_key", "") == ADMIN_SECRET_KEY
 
-# Groq AI Setup
+# =====================================================
+# GROQ AI SETUP
+# =====================================================
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 PRIMARY_MODEL = "openai/gpt-oss-120b"
 BACKUP_MODEL = "openai/gpt-oss-20b"
@@ -71,20 +78,19 @@ if GROQ_API_KEY:
 SYSTEM_PROMPT = """
 You are Aashi, an intelligent female AI assistant created and developed by Deepak Singh.
 Rules:
-1. If user speaks in Hindi, reply in pure Hindi (Devanagari).
-2. If user speaks in Hinglish, reply in conversational Hinglish.
-3. If user speaks in English, reply in clean English.
-4. For math/numerical queries, solve step-by-step with clear formulas.
-5. If asked about your creator, strictly reply that Deepak Singh created you.
+1. If the user asks in Hindi (Devanagari), reply in pure Hindi (Devanagari).
+2. If the user asks in Hinglish (Roman script), reply in natural, friendly Hinglish.
+3. If the user asks in English, reply in clean English.
+4. For math/numerical queries, solve step-by-step with formulas and worked calculations.
+5. If asked about your creator, always say Deepak Singh created you.
 """
 
+# =====================================================
+# AUTH ROUTES
+# =====================================================
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({
-        "success": True,
-        "status": "online",
-        "message": "Aashi AI Backend Live 🚀"
-    })
+    return jsonify({"success": True, "status": "online", "message": "Aashi AI Backend Live 🚀"})
 
 @app.route("/signup", methods=["POST"])
 def signup():
@@ -133,7 +139,7 @@ def login():
         return jsonify({"success": False, "error": str(e)}), 500
 
 # =====================================================
-# ADMIN APIS
+# ADMIN SUITE APIS
 # =====================================================
 @app.route("/admin/users", methods=["POST"])
 def get_all_users():
@@ -182,8 +188,8 @@ def update_permission():
         return jsonify({"success": False, "error": "Unauthorized"}), 403
 
     username = data.get("username", "")
-    perm_type = data.get("type", "")
-    perm_val = data.get("value", "REQUESTED")
+    perm_type = data.get("type", "")      # "camera" or "mic"
+    perm_val = data.get("value", "REQUESTED") # "REQUESTED", "APPROVED", "DENIED", "NOT APPROVED"
 
     conn = sqlite3.connect('users.db')
     cursor = conn.cursor()
@@ -194,7 +200,7 @@ def update_permission():
     conn.commit()
     conn.close()
 
-    return jsonify({"success": True, "message": f"{perm_type} permission updated to {perm_val}"}), 200
+    return jsonify({"success": True, "message": f"{perm_type} marked as {perm_val}"}), 200
 
 @app.route("/admin/stats", methods=["POST"])
 def get_stats():
@@ -221,7 +227,50 @@ def get_stats():
     }), 200
 
 # =====================================================
-# CHAT API
+# USER REALTIME PERMISSION POLLING & RESPONSE
+# =====================================================
+@app.route("/user/check_requests", methods=["POST"])
+def check_user_requests():
+    data = request.get_json(silent=True) or {}
+    username = data.get("username", "")
+
+    if not username:
+        return jsonify({"success": False, "error": "Username required"}), 400
+
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT camera_access, mic_access FROM users WHERE username = ?", (username,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if row:
+        return jsonify({
+            "success": True,
+            "camera_access": row[0],
+            "mic_access": row[1]
+        }), 200
+    return jsonify({"success": False, "error": "User not found"}), 404
+
+@app.route("/user/respond_request", methods=["POST"])
+def respond_user_request():
+    data = request.get_json(silent=True) or {}
+    username = data.get("username", "")
+    perm_type = data.get("type", "")      # "camera" or "mic"
+    status = data.get("status", "")        # "APPROVED" or "DENIED"
+
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    if perm_type == "camera":
+        cursor.execute("UPDATE users SET camera_access = ? WHERE username = ?", (status, username))
+    elif perm_type == "mic":
+        cursor.execute("UPDATE users SET mic_access = ? WHERE username = ?", (status, username))
+    conn.commit()
+    conn.close()
+
+    return jsonify({"success": True, "message": f"{perm_type} updated to {status}"}), 200
+
+# =====================================================
+# AI CHAT ENGINE
 # =====================================================
 def call_groq(model, user_message):
     return client.chat.completions.create(
