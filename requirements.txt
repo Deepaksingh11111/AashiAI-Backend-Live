@@ -4,3 +4,6 @@ groq
 gunicorn
 python-dotenv
 requests
+pypdf
+python-docx
+Pillow
