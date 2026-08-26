@@ -7,7 +7,7 @@ import sqlite3
 import hashlib
 
 # =====================================================
-# FLASK & DB CONFIGURATION
+# FLASK CONFIGURATION
 # =====================================================
 app = Flask(__name__)
 CORS(app)
@@ -20,8 +20,6 @@ def hash_password(password):
 def init_db():
     conn = sqlite3.connect('users.db')
     cursor = conn.cursor()
-    
-    # Users Table with status and hardware permissions
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,8 +31,6 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-
-    # Chats Logging Table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS chats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,7 +41,7 @@ def init_db():
         )
     ''')
 
-    # Seed Default Super Admin accounts
+    # Default Super Admin Seed
     cursor.execute("SELECT id FROM users WHERE username = 'admin'")
     if not cursor.fetchone():
         cursor.execute("INSERT INTO users (username, password, status) VALUES (?, ?, ?)",
@@ -65,7 +61,7 @@ def verify_admin(req_data):
     return req_data.get("admin_key", "") == ADMIN_SECRET_KEY
 
 # =====================================================
-# GROQ AI SETUP
+# GROQ AI CONFIGURATION
 # =====================================================
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 PRIMARY_MODEL = "openai/gpt-oss-120b"
@@ -78,15 +74,15 @@ if GROQ_API_KEY:
 SYSTEM_PROMPT = """
 You are Aashi, an intelligent female AI assistant created and developed by Deepak Singh.
 Rules:
-1. If the user asks in Hindi (Devanagari), reply in pure Hindi (Devanagari).
-2. If the user asks in Hinglish (Roman script), reply in natural, friendly Hinglish.
-3. If the user asks in English, reply in clean English.
-4. For math/numerical queries, solve step-by-step with formulas and worked calculations.
-5. If asked about your creator, always say Deepak Singh created you.
+1. If the user asks in Hindi (Devanagari script), reply ONLY in pure, natural Hindi (Devanagari).
+2. If the user asks in Hinglish (Hindi written in Roman script), reply in natural, conversational Hinglish.
+3. If the user asks in English, reply in crisp, clear English.
+4. For math/numerical queries, solve step-by-step with clear formulas and worked equations.
+5. If asked about your creator, always state that you were created and developed by Deepak Singh.
 """
 
 # =====================================================
-# AUTH ROUTES
+# AUTH & USER STATUS ROUTES
 # =====================================================
 @app.route("/", methods=["GET"])
 def home():
@@ -139,7 +135,41 @@ def login():
         return jsonify({"success": False, "error": str(e)}), 500
 
 # =====================================================
-# ADMIN SUITE APIS
+# LIVE USER STATUS & BLOCK CHECK (3 SEC REAL-TIME POLL)
+# =====================================================
+@app.route("/user/check_requests", methods=["POST"])
+def check_user_requests():
+    data = request.get_json(silent=True) or {}
+    username = data.get("username", "")
+
+    if not username:
+        return jsonify({"success": False, "error": "Username required"}), 400
+
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT status, camera_access, mic_access FROM users WHERE username = ?", (username,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if row:
+        status = row[0]
+        if status == "BLOCKED":
+            return jsonify({
+                "success": True,
+                "is_blocked": True,
+                "error": "BLOCKED_USER"
+            }), 200
+
+        return jsonify({
+            "success": True,
+            "is_blocked": False,
+            "camera_access": row[1],
+            "mic_access": row[2]
+        }), 200
+    return jsonify({"success": False, "error": "User not found"}), 404
+
+# =====================================================
+# ADMIN ENDPOINTS
 # =====================================================
 @app.route("/admin/users", methods=["POST"])
 def get_all_users():
@@ -181,27 +211,6 @@ def update_user_status():
 
     return jsonify({"success": True, "message": f"User status updated to {new_status}"}), 200
 
-@app.route("/admin/update_permission", methods=["POST"])
-def update_permission():
-    data = request.get_json(silent=True) or {}
-    if not verify_admin(data):
-        return jsonify({"success": False, "error": "Unauthorized"}), 403
-
-    username = data.get("username", "")
-    perm_type = data.get("type", "")      # "camera" or "mic"
-    perm_val = data.get("value", "REQUESTED") # "REQUESTED", "APPROVED", "DENIED", "NOT APPROVED"
-
-    conn = sqlite3.connect('users.db')
-    cursor = conn.cursor()
-    if perm_type == "camera":
-        cursor.execute("UPDATE users SET camera_access = ? WHERE username = ?", (perm_val, username))
-    elif perm_type == "mic":
-        cursor.execute("UPDATE users SET mic_access = ? WHERE username = ?", (perm_val, username))
-    conn.commit()
-    conn.close()
-
-    return jsonify({"success": True, "message": f"{perm_type} marked as {perm_val}"}), 200
-
 @app.route("/admin/stats", methods=["POST"])
 def get_stats():
     data = request.get_json(silent=True) or {}
@@ -227,50 +236,7 @@ def get_stats():
     }), 200
 
 # =====================================================
-# USER REALTIME PERMISSION POLLING & RESPONSE
-# =====================================================
-@app.route("/user/check_requests", methods=["POST"])
-def check_user_requests():
-    data = request.get_json(silent=True) or {}
-    username = data.get("username", "")
-
-    if not username:
-        return jsonify({"success": False, "error": "Username required"}), 400
-
-    conn = sqlite3.connect('users.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT camera_access, mic_access FROM users WHERE username = ?", (username,))
-    row = cursor.fetchone()
-    conn.close()
-
-    if row:
-        return jsonify({
-            "success": True,
-            "camera_access": row[0],
-            "mic_access": row[1]
-        }), 200
-    return jsonify({"success": False, "error": "User not found"}), 404
-
-@app.route("/user/respond_request", methods=["POST"])
-def respond_user_request():
-    data = request.get_json(silent=True) or {}
-    username = data.get("username", "")
-    perm_type = data.get("type", "")      # "camera" or "mic"
-    status = data.get("status", "")        # "APPROVED" or "DENIED"
-
-    conn = sqlite3.connect('users.db')
-    cursor = conn.cursor()
-    if perm_type == "camera":
-        cursor.execute("UPDATE users SET camera_access = ? WHERE username = ?", (status, username))
-    elif perm_type == "mic":
-        cursor.execute("UPDATE users SET mic_access = ? WHERE username = ?", (status, username))
-    conn.commit()
-    conn.close()
-
-    return jsonify({"success": True, "message": f"{perm_type} updated to {status}"}), 200
-
-# =====================================================
-# AI CHAT ENGINE
+# AI CHAT API (WITH BLOCK INTERCEPT)
 # =====================================================
 def call_groq(model, user_message):
     return client.chat.completions.create(
@@ -286,14 +252,30 @@ def call_groq(model, user_message):
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
-        if not GROQ_API_KEY or client is None:
-            return jsonify({"success": False, "error": "Groq client not configured"}), 500
-
         data = request.get_json(silent=True) or {}
+        username = str(data.get("username", "")).strip()
         user_message = str(data.get("message", "")).strip()
+
+        # Hard Block Validation
+        if username:
+            conn = sqlite3.connect('users.db')
+            cursor = conn.cursor()
+            cursor.execute("SELECT status FROM users WHERE username = ?", (username,))
+            user_row = cursor.fetchone()
+            conn.close()
+
+            if user_row and user_row[0] == "BLOCKED":
+                return jsonify({
+                    "success": False, 
+                    "error": "BLOCKED_USER", 
+                    "reply": "Aapka account admin dwara block kar diya gaya hai."
+                }), 403
 
         if not user_message:
             return jsonify({"success": False, "error": "Message cannot be empty"}), 400
+
+        if not GROQ_API_KEY or client is None:
+            return jsonify({"success": False, "error": "Groq client not configured"}), 500
 
         try:
             response = call_groq(PRIMARY_MODEL, user_message)
