@@ -7,6 +7,7 @@ import sqlite3
 import hashlib
 from pypdf import PdfReader
 import docx
+import io
 
 app = Flask(__name__)
 CORS(app)
@@ -16,8 +17,11 @@ ADMIN_SECRET_KEY = "AASHI_SUPER_ADMIN_2026"
 def hash_password(password):
     return hashlib.sha256(password.encode('utf-8')).hexdigest()
 
+def get_db_connection():
+    return sqlite3.connect('users.db', timeout=10.0, check_same_thread=False)
+
 def init_db():
-    conn = sqlite3.connect('users.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
@@ -40,6 +44,7 @@ def init_db():
         )
     ''')
 
+    # Seed Default Super Admin accounts
     cursor.execute("SELECT id FROM users WHERE username = 'admin'")
     if not cursor.fetchone():
         cursor.execute("INSERT INTO users (username, password, status) VALUES (?, ?, ?)",
@@ -60,8 +65,8 @@ def verify_admin(req_data):
 
 # GROQ CONFIGURATION
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
-PRIMARY_MODEL = "openai/gpt-oss-120b"
-BACKUP_MODEL = "openai/gpt-oss-20b"
+PRIMARY_MODEL = "llama-3.3-70b-versatile"
+BACKUP_MODEL = "llama-3.1-8b-instant"
 
 client = None
 if GROQ_API_KEY:
@@ -81,17 +86,20 @@ def extract_text_from_file(file_storage):
     filename = file_storage.filename.lower()
     content = ""
     try:
+        file_bytes = file_storage.read()
+        file_storage.seek(0)
+        
         if filename.endswith(".pdf"):
-            reader = PdfReader(file_storage)
+            reader = PdfReader(io.BytesIO(file_bytes))
             for page in reader.pages:
                 text = page.extract_text()
                 if text:
                     content += text + "\n"
         elif filename.endswith(".docx"):
-            doc = docx.Document(file_storage)
+            doc = docx.Document(io.BytesIO(file_bytes))
             content = "\n".join([p.text for p in doc.paragraphs])
         elif filename.endswith(".txt"):
-            content = file_storage.read().decode("utf-8", errors="ignore")
+            content = file_bytes.decode("utf-8", errors="ignore")
     except Exception as e:
         print(f"Extraction error: {e}")
     return content.strip()
@@ -121,7 +129,7 @@ def signup():
         if not username or not password:
             return jsonify({"success": False, "error": "Username aur password dono zaroori hain."}), 400
 
-        conn = sqlite3.connect('users.db')
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", 
                        (username, hash_password(password)))
@@ -141,7 +149,7 @@ def login():
         username = str(data.get("username", "")).strip()
         password = str(data.get("password", "")).strip()
 
-        conn = sqlite3.connect('users.db')
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT id, username, status FROM users WHERE username = ? AND password = ?", 
                        (username, hash_password(password)))
@@ -165,7 +173,7 @@ def check_user_requests():
     if not username:
         return jsonify({"success": False, "error": "Username required"}), 400
 
-    conn = sqlite3.connect('users.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT status, camera_access, mic_access FROM users WHERE username = ?", (username,))
     row = cursor.fetchone()
@@ -192,12 +200,14 @@ def analyze_file():
             return jsonify({"success": False, "error": "File attach nahi ki gayi."}), 400
             
         uploaded_file = request.files['file']
+        if uploaded_file.filename == '':
+            return jsonify({"success": False, "error": "Koi file select nahi ki gayi."}), 400
+
         user_query = request.form.get("query", "Summarize and extract key insights from this document.")
         username = request.form.get("username", "")
 
-        # Block check
         if username:
-            conn = sqlite3.connect('users.db')
+            conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("SELECT status FROM users WHERE username = ?", (username,))
             user_row = cursor.fetchone()
@@ -206,18 +216,18 @@ def analyze_file():
                 return jsonify({"success": False, "error": "BLOCKED_USER"}), 403
 
         extracted_text = extract_text_from_file(uploaded_file)
-        if not extracted_text:
+        if not extracted_text or len(extracted_text.strip()) == 0:
             return jsonify({"success": False, "error": "File se readable text extract nahi ho saka."}), 400
 
         truncated_doc = extracted_text[:8000]
-        prompt = f"Document Text:\n\"\"\"\n{truncated_doc}\n\"\"\"\n\nUser Instruction: {user_query}\n\nPlease analyze the document clearly."
+        prompt = f"Document Text:\n\"\"\"\n{truncated_doc}\n\"\"\"\n\nUser Instruction: {user_query}\n\nPlease analyze and explain clearly."
 
         response = call_groq(PRIMARY_MODEL, prompt)
         reply = response.choices[0].message.content
 
-        return jsonify({"success": True, "reply": reply})
+        return jsonify({"success": True, "reply": reply}), 200
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": f"Server error: {str(e)}"}), 500
 
 # CHAT API (TEXT & VOICE)
 @app.route("/chat", methods=["POST"])
@@ -228,7 +238,7 @@ def chat():
         user_message = str(data.get("message", "")).strip()
 
         if username:
-            conn = sqlite3.connect('users.db')
+            conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("SELECT status FROM users WHERE username = ?", (username,))
             user_row = cursor.fetchone()
@@ -267,7 +277,7 @@ def get_all_users():
     if not verify_admin(data):
         return jsonify({"success": False, "error": "Unauthorized Access"}), 403
 
-    conn = sqlite3.connect('users.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT id, username, status, camera_access, mic_access, created_at FROM users")
     rows = cursor.fetchall()
@@ -293,7 +303,7 @@ def update_user_status():
     username = data.get("username", "")
     new_status = data.get("status", "BLOCKED")
 
-    conn = sqlite3.connect('users.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("UPDATE users SET status = ? WHERE username = ?", (new_status, username))
     conn.commit()
@@ -307,7 +317,7 @@ def get_stats():
     if not verify_admin(data):
         return jsonify({"success": False, "error": "Unauthorized"}), 403
 
-    conn = sqlite3.connect('users.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM users")
     total_users = cursor.fetchone()[0]
