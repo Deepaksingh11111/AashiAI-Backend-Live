@@ -63,10 +63,12 @@ init_db()
 def verify_admin(req_data):
     return req_data.get("admin_key", "") == ADMIN_SECRET_KEY
 
-# GROQ CONFIGURATION
+# =====================================================
+# GROQ CONFIGURATION (YOUR REQUESTED MODELS)
+# =====================================================
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
-PRIMARY_MODEL = "llama-3.3-70b-versatile"
-BACKUP_MODEL = "llama-3.1-8b-instant"
+PRIMARY_MODEL = "openai/gpt-oss-120b"
+BACKUP_MODEL = "openai/gpt-oss-20b"
 
 client = None
 if GROQ_API_KEY:
@@ -222,8 +224,13 @@ def analyze_file():
         truncated_doc = extracted_text[:8000]
         prompt = f"Document Text:\n\"\"\"\n{truncated_doc}\n\"\"\"\n\nUser Instruction: {user_query}\n\nPlease analyze and explain clearly."
 
-        response = call_groq(PRIMARY_MODEL, prompt)
-        reply = response.choices[0].message.content
+        try:
+            response = call_groq(PRIMARY_MODEL, prompt)
+            reply = response.choices[0].message.content
+        except Exception:
+            time.sleep(0.5)
+            response = call_groq(BACKUP_MODEL, prompt)
+            reply = response.choices[0].message.content
 
         return jsonify({"success": True, "reply": reply}), 200
     except Exception as e:
