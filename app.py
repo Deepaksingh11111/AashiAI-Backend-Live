@@ -6,18 +6,19 @@ import time
 import sqlite3
 import hashlib
 
-# =====================================================
-# FLASK CONFIGURATION
-# =====================================================
 app = Flask(__name__)
 CORS(app)
 
-# =====================================================
-# DATABASE SETUP (SQLITE)
-# =====================================================
+ADMIN_SECRET_KEY = "AASHI_SUPER_ADMIN_2026"
+
+def hash_password(password):
+    return hashlib.sha256(password.encode('utf-8')).hexdigest()
+
 def init_db():
     conn = sqlite3.connect('users.db')
     cursor = conn.cursor()
+    
+    # Create tables
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,22 +39,27 @@ def init_db():
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    # Seed default Admin account if not exists
+    cursor.execute("SELECT id FROM users WHERE username = 'admin'")
+    if not cursor.fetchone():
+        cursor.execute("INSERT INTO users (username, password, status) VALUES (?, ?, ?)",
+                       ('admin', hash_password('admin123'), 'ACTIVE'))
+    
+    cursor.execute("SELECT id FROM users WHERE username = 'deepak'")
+    if not cursor.fetchone():
+        cursor.execute("INSERT INTO users (username, password, status) VALUES (?, ?, ?)",
+                       ('deepak', hash_password('admin123'), 'ACTIVE'))
+
     conn.commit()
     conn.close()
 
 init_db()
 
-def hash_password(password):
-    return hashlib.sha256(password.encode('utf-8')).hexdigest()
-
-ADMIN_SECRET_KEY = "AASHI_SUPER_ADMIN_2026"
-
 def verify_admin(req_data):
     return req_data.get("admin_key", "") == ADMIN_SECRET_KEY
 
-# =====================================================
-# GROQ CONFIGURATION
-# =====================================================
+# Groq AI Setup
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 PRIMARY_MODEL = "openai/gpt-oss-120b"
 BACKUP_MODEL = "openai/gpt-oss-20b"
@@ -63,50 +69,21 @@ if GROQ_API_KEY:
     client = Groq(api_key=GROQ_API_KEY)
 
 SYSTEM_PROMPT = """
-You are Aashi, a friendly, intelligent Indian female AI assistant created and developed by Deepak Singh.
-
-PERSONALITY:
-- Warm, polite, respectful, and helpful.
-- Natural conversational Indian tone.
-
-LANGUAGE RULES:
-1. If the user speaks in Hindi (Devanagari script), reply ONLY in pure, natural Hindi (Devanagari).
-2. If the user speaks in Hinglish (Hindi written in Roman script), reply in natural, conversational Hinglish.
-3. If the user speaks in English, reply in clear, professional English.
-
-MATHEMATICS & TECHNICAL RULES:
-1. When solving math or numerical problems, always provide a step-by-step solution with clear formulas and worked calculations.
-2. For programming queries, provide complete working code inside standard Markdown code blocks (```python, ```java, etc.).
-
-IMPORTANT RULES:
-1. Your name is Aashi.
-2. If asked "Who is your creator?" or "Tumhe kisne banaya?", always answer that you were created and developed by Deepak Singh.
-3. Never claim you are Gemini, ChatGPT, or developed by Google/OpenAI.
-4. Keep answers crisp and avoid unnecessary emojis.
+You are Aashi, an intelligent female AI assistant created and developed by Deepak Singh.
+Rules:
+1. If user speaks in Hindi, reply in pure Hindi (Devanagari).
+2. If user speaks in Hinglish, reply in conversational Hinglish.
+3. If user speaks in English, reply in clean English.
+4. For math/numerical queries, solve step-by-step with clear formulas.
+5. If asked about your creator, strictly reply that Deepak Singh created you.
 """
 
-# =====================================================
-# PUBLIC ROUTES
-# =====================================================
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({
         "success": True,
         "status": "online",
-        "message": "Aashi AI Backend is running 🚀",
-        "provider": "Groq",
-        "primary_model": PRIMARY_MODEL,
-        "backup_model": BACKUP_MODEL,
-        "groq_key_configured": bool(GROQ_API_KEY)
-    })
-
-@app.route("/health", methods=["GET"])
-def health():
-    return jsonify({
-        "success": True,
-        "backend": "online",
-        "provider": "Groq",
-        "groq_key_configured": bool(GROQ_API_KEY)
+        "message": "Aashi AI Backend Live 🚀"
     })
 
 @app.route("/signup", methods=["POST"])
@@ -156,7 +133,7 @@ def login():
         return jsonify({"success": False, "error": str(e)}), 500
 
 # =====================================================
-# ADMIN ENDPOINTS
+# ADMIN APIS
 # =====================================================
 @app.route("/admin/users", methods=["POST"])
 def get_all_users():
@@ -244,7 +221,7 @@ def get_stats():
     }), 200
 
 # =====================================================
-# GROQ AI CHAT API
+# CHAT API
 # =====================================================
 def call_groq(model, user_message):
     return client.chat.completions.create(
